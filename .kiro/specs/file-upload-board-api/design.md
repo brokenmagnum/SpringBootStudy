@@ -4,7 +4,10 @@
 
 파일 첨부가 가능한 게시판 REST API의 설계 문서입니다. 요구사항은 `requirements.md`를 따르며, 구현 방법에 관한 결정은 이 문서에서 확정합니다.
 
-- 기술 환경: Java 21, Spring Boot 3.x, Gradle, Spring Data JPA, PostgreSQL
+- 기술 환경: Java 25, Spring Boot 4.1 이상(4.1.x), Gradle 9.1 이상, Spring Data JPA, PostgreSQL
+  - Spring Boot 4.1은 Java 17 이상에서 동작하고 Java 25를 지원하며, Gradle은 8.14 이상 또는 9.x를 지원합니다 ([Spring Boot System Requirements](https://docs.spring.io/spring-boot/system-requirements.html)).
+  - JDK 25로 Gradle을 실행하려면 Gradle 9.1 이상이 필요하다고 안내되어 있어([Gradle Compatibility Matrix](https://docs.gradle.org/current/userguide/compatibility.html)) Gradle 9.x를 사용합니다.
+  - Boot 4는 Spring Framework 7, Jakarta EE 11, Hibernate 7, Jackson 3, JUnit 6을 기반으로 합니다.
 - 소스 위치: `Src/` 하위 (패키지는 `com.example.board`)
 - 원칙: `AGENTS.md`의 "Simple is Best". 인터페이스, 별도 도메인/DTO 변환 계층, 멀티 모듈 등은 만들지 않습니다.
 - 범위 밖: 화면(UI), 관리자 기능, 파일 미리보기
@@ -17,7 +20,7 @@
 |------|------|------|------|
 | 1 | 업로드 파일 저장 방식 | PostgreSQL `bytea` 컬럼(Blob)에 저장 | 파일 저장 경로 설정, 고아 파일 정리, 글 삭제 시 파일 동기화가 필요 없다. Post 삭제 시 DB 트랜잭션 하나로 함께 지워진다. 파일이 최대 10MB, 글당 3개라 학습용으로 DB 부담이 크지 않다. |
 | 2 | 인증 방식 | 서버 세션(`HttpSession`, `JSESSIONID` 쿠키) | JWT는 토큰 발급, 검증, 만료, 폐기 처리가 따로 필요하다. 세션은 로그아웃과 탈퇴 시 `invalidate()` 한 번으로 요구사항 3.3, 5.2를 만족한다. |
-| 3 | 비밀번호 해시 | BCrypt (`spring-security-crypto`의 `BCryptPasswordEncoder`) | Spring Security 전체(필터 체인)를 들이지 않고 암호화 모듈만 사용한다. 비밀번호는 최대 20자로 제한한다(BCrypt는 72바이트까지만 반영하며, 20자는 UTF-8로 60바이트 이하다). |
+| 3 | 비밀번호 해시 | BCrypt (`spring-security-crypto`의 `BCryptPasswordEncoder`) | Spring Security 전체(필터 체인)를 들이지 않고 암호화 모듈만 사용한다. 비밀번호는 최대 20자로 제한한다(BCrypt는 72바이트까지만 반영하며, 20자는 UTF-8로 60바이트 이하다). 최신 Spring Security는 72바이트를 넘는 비밀번호를 해시하거나 비교할 때 `IllegalArgumentException`을 던지므로([관련 이슈](https://github.com/spring-projects/spring-security/issues/16802)) 로그인 요청에도 같은 길이 제한을 둔다. |
 | 4 | 회원탈퇴 시 작성 글 | 글과 첨부파일을 함께 삭제 | 작성자 표시 변경(탈퇴 회원 처리)은 추가 컬럼과 화면 규칙이 필요하다. DB의 `ON DELETE CASCADE` 한 줄로 처리된다. |
 | 5 | Max_File_Size, Max_File_Count | 10MB, 3개로 확정 | 초기값을 그대로 사용한다. 크기는 `application.yml`, 개수는 코드 상수로 둔다. |
 | 6 | 허용 파일 형식 | 제한 없음 | 학습용이며 요구사항에 형식 제한이 없다. 대신 다운로드 시 항상 `attachment`로 내려보내 브라우저가 파일을 직접 실행하거나 렌더링하지 않게 한다. |
@@ -26,8 +29,25 @@
 
 ### 참고한 자료
 
-- Spring Boot의 multipart 기본 제한은 파일 1MB, 요청 10MB입니다. 10MB 파일을 받으려면 설정을 명시해야 합니다 ([How to Handle Large File Uploads in Spring Boot](https://oneuptime.com/blog/post/2026-01-25-large-file-uploads-spring-boot/view), 내용을 요약함).
-- Hibernate는 `@Lob byte[]`를 PostgreSQL에서 `oid`(별도 large object)로 매핑하는 것으로 알려져 있어, `@Lob` 없이 `byte[]`만 사용해 `bytea`로 저장합니다.
+- Spring Boot 4.1의 multipart 기본 제한은 파일 1MB, 요청 10MB이며 속성 이름(`spring.servlet.multipart.*`)도 같습니다. 10MB 파일을 받으려면 설정을 명시해야 합니다 ([MultipartProperties 소스](https://github.com/spring-projects/spring-boot/blob/4.1.x/module/spring-boot-servlet/src/main/java/org/springframework/boot/servlet/autoconfigure/MultipartProperties.java)).
+- Hibernate 7은 `byte[]`를 기본적으로 `VARBINARY`로, `@Lob byte[]`를 `BLOB`으로 매핑합니다 ([Hibernate 7.0 User Guide](https://docs.hibernate.org/orm/7.0/userguide/html_single/)). PostgreSQL에서 BLOB은 `oid`(별도 large object)로 저장되는 것으로 알려져 있어, `@Lob` 없이 `byte[]`만 사용해 `bytea`로 저장합니다.
+
+### Spring Boot 4 전환 검토
+
+Boot 3.x에서 4.x로 바뀌며 이 설계에 영향이 있는지 확인한 결과입니다 ([Spring Boot 4.0 Migration Guide](https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-4.0-Migration-Guide), [Hibernate 7.0 Migration Guide](https://docs.hibernate.org/orm/7.0/migration-guide/)). 내용을 요약했습니다.
+
+| 항목 | 결과 | 상태 |
+|------|------|------|
+| 스타터 이름 | `spring-boot-starter-web`은 `spring-boot-starter-webmvc`로 바뀌었다(구 이름은 deprecated). `data-jpa`, `validation`은 그대로다. 각 스타터에 `-test` 짝이 생겼다. | 확인함 |
+| Jackson 3 | 패키지가 `tools.jackson`으로 바뀌었다(`jackson-annotations`는 기존 패키지 유지). 이 설계는 Jackson API를 직접 쓰지 않고 record를 자동 변환하므로 코드 변경이 없다. `webmvc` 스타터가 Jackson 3 스타터를 포함한다. | 확인함 |
+| `LocalDateTime` JSON 형식 | `createdAt`이 숫자가 아니라 ISO 문자열로 나오는지는 확인하지 못했다. | 구현 시 확인 (예제 테스트에 포함) |
+| Hibernate 7 | 마이그레이션 가이드에 `@OnDelete`, `byte[]` 매핑 변경은 없다. JPQL `select new ...`는 select 목록을 명시하므로 영향이 없다. 속성 `spring.jpa.hibernate.ddl-auto`는 그대로다. | 확인함 |
+| `bytea`, `on delete cascade` DDL | 실제 생성된 컬럼 타입과 FK 옵션은 확인하지 못했다. | 구현 시 확인 (`board_test`에서 DDL 확인) |
+| Jakarta EE 11 / Spring Framework 7 | `jakarta.validation.constraints.*`, `jakarta.servlet.http.HttpSession`, `MultipartFile`, `MaxUploadSizeExceededException`, `ResponseEntity`, `ContentDisposition` 모두 이름과 패키지가 그대로다. | 확인함 (`ContentDisposition`, `ResponseEntity`는 구현 시 컴파일로 재확인) |
+| multipart 속성 | `spring.servlet.multipart.max-file-size`, `max-request-size`와 기본값(1MB, 10MB)이 그대로다. | 확인함 |
+| `spring-security-crypto` | Boot BOM이 Spring Security 7.x 버전을 관리하므로 버전을 직접 쓰지 않는다. `BCryptPasswordEncoder` 패키지 변경은 확인하지 못했다. | 구현 시 확인 |
+| 테스트 애노테이션 | `@SpringBootTest`만으로는 MockMvc가 제공되지 않아 `@AutoConfigureMockMvc`를 붙여야 한다. 이 애노테이션은 `org.springframework.boot.webmvc.test.autoconfigure` 패키지로 옮겨졌고 `spring-boot-starter-webmvc-test`에 있다. `@MockBean`은 제거되어 `@MockitoBean`을 쓴다. | 확인함 |
+| jqwik, jqwik-spring | 아래 "Testing Strategy"의 속성 테스트 항목에 정리했다. | 일부 구현 시 확인 |
 
 ## Architecture
 
@@ -126,7 +146,7 @@ public class LoginSession {
 ```java
 record JoinRequest(@NotBlank String username, @NotBlank @Size(max = 20) String password,
                    @NotBlank String name, @NotBlank String email) {}
-record LoginRequest(@NotBlank String username, @NotBlank String password) {}
+record LoginRequest(@NotBlank String username, @NotBlank @Size(max = 20) String password) {}
 record MemberUpdateRequest(@NotBlank String name, @NotBlank String email,
                            @Size(max = 20) String password) {} // password가 비어 있으면 변경하지 않는다
 
@@ -168,7 +188,12 @@ DB 접속 계정과 비밀번호는 환경변수로 받으며 코드와 저장�
 
 ### 의존성
 
-`spring-boot-starter-web`, `spring-boot-starter-data-jpa`, `spring-boot-starter-validation`, `org.postgresql:postgresql`, `org.springframework.security:spring-security-crypto`, 테스트용 `spring-boot-starter-test`, `jqwik`, `jqwik-spring`
+`spring-boot-starter-webmvc`, `spring-boot-starter-data-jpa`, `spring-boot-starter-validation`, `org.postgresql:postgresql`, `org.springframework.security:spring-security-crypto`, 테스트용 `spring-boot-starter-webmvc-test`, `spring-boot-starter-data-jpa-test`, `net.jqwik:jqwik:1.9.3`
+
+- 버전은 Spring Boot Gradle 플러그인(`org.springframework.boot` 4.1.x)과 BOM이 관리하며, `jqwik`만 버전을 직접 지정합니다.
+- Boot 4에서는 `spring-boot-starter-web`이 `spring-boot-starter-webmvc`로 바뀌었고 `spring-boot-starter-test`를 따로 넣지 않습니다(`-test` 스타터가 포함). `spring-boot-starter-validation`의 `-test` 짝이 필요한지는 구현 시 확인합니다.
+- `jqwik-spring`은 제외합니다. 이유는 Testing Strategy를 참고합니다.
+- Java 25는 Gradle Java 툴체인(`languageVersion = JavaLanguageVersion.of(25)`)으로 지정합니다.
 
 `spring-boot-starter-security`는 넣지 않습니다. 넣으면 모든 요청에 기본 보안 필터가 적용되어 설정할 것이 늘어납니다. 그 대신 CSRF 방어는 적용되지 않으므로, 학습용 API라는 전제에서 범위 밖으로 둡니다.
 
@@ -323,7 +348,11 @@ public class Attachment {
 
 ### 속성 테스트
 
-- 라이브러리: jqwik, Spring 컨텍스트 연동은 jqwik-spring (속성 테스트를 직접 구현하지 않는다)
+- 라이브러리: jqwik 1.9.3 (속성 테스트를 직접 구현하지 않는다). `jqwik-spring`은 쓰지 않는다.
+  - `jqwik-spring`은 Spring Framework 6.1, Spring Boot 3.2까지만 테스트되었다고 안내되어 있고([jqwik-spring](https://github.com/jqwik-team/jqwik-spring)) Spring 7, Boot 4 지원은 확인하지 못했다.
+  - jqwik 1.9.3은 JUnit Platform 1.13.1 기반이고 Boot 4는 JUnit 6을 쓴다. 두 버전이 함께 동작하는지는 확인하지 못했다. 1.10 이후 버전도 JUnit Platform 1.x 기반이며, 1.10부터 AI 에이전트 사용을 권장하지 않는다는 조항이 추가되어 그 이전 버전(1.9.3)을 고정한다 ([jqwik Releases](https://github.com/jqwik-team/jqwik/releases)).
+  - Spring 컨텍스트는 jqwik 확장 없이 테스트 코드에서 직접 띄운다. `SpringApplicationBuilder(BoardApplication.class).profiles("test").run()`으로 한 번만 시작해 정적 필드에 두고, 서비스는 `getBean`으로 꺼낸다. 접속 DB는 `application-test.yml`에서 `board_test`로 지정한다.
+  - 구현 시 jqwik이 실행되지 않으면, 같은 속성을 JUnit 6 `@ParameterizedTest`와 `@MethodSource`(시드를 고정한 `java.util.Random`으로 100건 생성)로 바꾼다. 축소(shrinking)는 포기하는 대신 의존성이 줄어든다. 속성 정의와 태그 형식은 그대로 유지한다.
 - 각 속성은 하나의 속성 테스트로 구현하고 최소 100회 반복한다.
 - 각 테스트에 설계 속성을 가리키는 주석을 단다. 형식: `Feature: file-upload-board-api, Property {번호}: {속성 제목}`
 - 각 시도 전에 테이블을 비워 시도 간 영향을 없앤다 (`@BeforeTry`).
@@ -341,7 +370,7 @@ public class Attachment {
 
 ### 예제 테스트
 
-`MockMvc`로 HTTP 수준을 확인합니다.
+`@SpringBootTest`, `@AutoConfigureMockMvc`(Boot 4에서는 `org.springframework.boot.webmvc.test.autoconfigure` 패키지, 직접 붙여야 MockMvc가 제공됨), `@ActiveProfiles("test")`와 `MockMvc`로 HTTP 수준을 확인합니다. 모의 객체가 필요하면 `@MockBean` 대신 `@MockitoBean`을 씁니다.
 
 - DB 연결 확인 API가 200 `UP`을 반환하고, `DataSource`가 예외를 던지면 503을 반환한다 (1.2, 1.3)
 - 아이디 중복 가입 409, 필수값 누락 400 (2.3, 2.4, 8.3, 9.4)
@@ -353,6 +382,9 @@ public class Attachment {
 - 파일 크기 경계: 정확히 10MB는 201, 10MB + 1바이트는 413 (11.3)
 - 첨부파일 삭제 후 다운로드가 404 (11.6)
 - 다운로드 응답의 `Content-Disposition`이 `attachment`이고 한글 파일명이 유지된다 (12.1)
+- 게시글 상세 응답의 `createdAt`이 숫자가 아닌 ISO 문자열이다 (Jackson 3 기본값 확인)
+- 21자 이상의 비밀번호로 로그인하면 500이 아니라 400이다 (2.4, 3.2)
+- 생성된 스키마에서 `attachment.content`가 `bytea`이고 외래 키에 `on delete cascade`가 있다 (Hibernate 7 DDL 확인)
 
 ### 스모크 테스트
 
@@ -377,3 +409,4 @@ public class Attachment {
 | 일시 (KST) | 내용 |
 |------------|------|
 | 2026-11-24 09:57:15 | 최초 작성 |
+| 2026-11-24 10:25:33 | Java 25, Spring Boot 4.1 이상, Gradle 9.1 이상으로 변경. 스타터 이름, 테스트 애노테이션, 의존성 갱신. jqwik-spring 제외. 로그인 비밀번호 길이 제한 추가. Boot 4 전환 검토 표 추가 |
